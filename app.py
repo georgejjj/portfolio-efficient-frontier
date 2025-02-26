@@ -46,7 +46,7 @@ sigma1 = st.sidebar.number_input("Volatility (%)", value=12.0, min_value=0.1, ma
 # Asset 2 parameters
 st.sidebar.subheader("Asset 2")
 mu2 = st.sidebar.number_input("Return (%)", value=15.0, min_value=0.0, max_value=100.0, key="mu2") / 100
-sigma2 = st.sidebar.number_input("Volatility (%)", value=20.0, min_value=0.1, max_value=100.0, key="sigma2") / 100
+sigma2 = st.sidebar.number_input("Volatility (%)", value=24.0, min_value=0.1, max_value=100.0, key="sigma2") / 100
 
 # Short selling and CML options
 allow_short = st.sidebar.checkbox("Allow Short Selling", value=True, key="allow_short_2")
@@ -71,7 +71,7 @@ with tab1:
     
     # Generate weights for the frontier
     if allow_short:
-        w = np.linspace(-0.5, 1.5, 100)  # Allow short positions
+        w = np.linspace(-1, 2, 100)  # Allow short positions
     else:
         w = np.linspace(0, 1, 100)  # No short positions
     
