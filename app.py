@@ -18,10 +18,11 @@ st.markdown("""
 This application visualizes the efficient frontier for portfolios consisting of different assets.
 * **Two-Asset Frontier**: Explore how correlation affects the efficient frontier for two assets
 * **Multi-Asset Frontier**: Visualize the frontier with multiple assets and find optimal portfolios
+* **Analytical Solution**: Calculate the exact efficient frontier using matrix operations
 """)
 
 # Create tabs for main content
-tab1, tab2 = st.tabs(["Two-Asset Frontier", "Multi-Asset Frontier"])
+tab1, tab2, tab3 = st.tabs(["Two-Asset Frontier", "Multi-Asset Frontier", "Analytical Solution"])
 
 # ===== SIDEBAR PARAMETERS =====
 st.sidebar.title("Settings")
@@ -389,6 +390,420 @@ with tab2:
                 file_name="multi_asset_frontier.csv",
                 mime="text/csv",
                 key="download_multi"
+            )
+
+# =============== ANALYTICAL SOLUTION TAB ===============
+with tab3:
+    st.subheader("Analytical Efficient Frontier (Four Assets)")
+    
+    # Instructions
+    st.markdown(r"""
+    This tab calculates the exact efficient frontier using matrix operations. 
+    The efficient frontier equation is:
+    
+    $$\frac{\sigma^2_p}{1/c} = \frac{(r_p - b/c)^2}{|d|/c^2} + 1$$
+    
+    Where parameters are derived from the covariance matrix and expected returns.
+    """)
+    
+    # Create a layout with two columns for inputs and main results
+    input_col, main_col = st.columns([1, 2])
+    
+    with input_col:
+        # Asset input section
+        st.subheader("Asset Parameters")
+        
+        # Default values for the assets
+        default_returns = np.array([0.037, 0.020, 0.026, 0.041])
+        default_stdevs = np.array([0.114, 0.147, 0.104, 0.105])
+        default_corr = np.array([
+            [1.000, 0.239, 0.590, 0.501],
+            [0.239, 1.000, 0.262, 0.194],
+            [0.590, 0.262, 1.000, 0.458],
+            [0.501, 0.194, 0.458, 1.000]
+        ])
+        
+        asset_names = ['A', 'B', 'C', 'D']
+        
+        # Create inputs for asset returns and volatilities
+        st.write("Expected Returns and Standard Deviations:")
+        cols = st.columns(2)
+        
+        # Arrays to store user inputs
+        user_returns = np.zeros(4)
+        user_stdevs = np.zeros(4)
+        
+        # Create input fields for each asset
+        for i in range(4):
+            with cols[i % 2]:
+                st.markdown(f"**Asset {asset_names[i]}**")
+                user_returns[i] = st.number_input(
+                    f"Return", 
+                    value=float(default_returns[i]), 
+                    min_value=0.0, 
+                    max_value=1.0, 
+                    step=0.001, 
+                    format="%.3f",
+                    key=f"ret_{i}"
+                )
+                user_stdevs[i] = st.number_input(
+                    f"Std Dev", 
+                    value=float(default_stdevs[i]), 
+                    min_value=0.001, 
+                    max_value=1.0, 
+                    step=0.001, 
+                    format="%.3f",
+                    key=f"std_{i}"
+                )
+        
+        # Correlation matrix input in expander
+        with st.expander("Correlation Matrix", expanded=False):
+            # Create a 4x4 matrix of correlation inputs
+            user_corr = np.ones((4, 4))  # Initialize with ones on diagonal
+            
+            # We only need to input the lower triangle since correlation matrix is symmetric
+            for i in range(4):
+                for j in range(i):
+                    # Create a unique key for each correlation input
+                    key = f"corr_{i}_{j}"
+                    # Create columns for each row
+                    if j == 0:  # Start a new row
+                        cols = st.columns(4)
+                    
+                    # Add input in appropriate column
+                    with cols[j]:
+                        if i > j:  # Only show inputs for lower triangle
+                            corr_value = st.number_input(
+                                f"{asset_names[i]}-{asset_names[j]}", 
+                                value=float(default_corr[i][j]), 
+                                min_value=-1.0, 
+                                max_value=1.0, 
+                                step=0.01,
+                                format="%.3f",
+                                key=key
+                            )
+                            user_corr[i, j] = corr_value
+                            user_corr[j, i] = corr_value  # Symmetric matrix
+        
+        # Allow users to toggle short selling and CML
+        st.subheader("Options")
+        allow_short_analytical = st.checkbox("Allow Short Selling", value=True, key="allow_short_analytical")
+        show_cml_analytical = st.checkbox("Show Capital Market Line", value=True, key="show_cml_analytical")
+    
+    # Calculate the covariance matrix
+    cov_matrix = np.outer(user_stdevs, user_stdevs) * user_corr
+    
+    # Calculate efficient frontier parameters
+    def calculate_frontier_params(returns, cov_matrix):
+        n = len(returns)
+        
+        # Create vectors and matrices needed
+        ones = np.ones(n)
+        
+        # Calculate inverse of covariance matrix
+        try:
+            inv_cov = np.linalg.inv(cov_matrix)
+        except np.linalg.LinAlgError:
+            st.error("Error: Covariance matrix is singular. Please check your inputs.")
+            return None, None, None, None, None, ones
+        
+        # Calculate efficient frontier parameters
+        a = returns @ inv_cov @ returns
+        b = ones @ inv_cov @ returns
+        c = ones @ inv_cov @ ones
+        d = a * c - b ** 2
+        
+        return a, b, c, d, inv_cov, ones
+    
+    # Calculate the parameters
+    a, b, c, d, inv_cov, ones_vector = calculate_frontier_params(user_returns, cov_matrix)
+    
+    if inv_cov is not None:
+        # Calculate minimum and maximum returns for the frontier
+        min_ret = min(user_returns) * 0.5
+        max_ret = max(user_returns) * 1.5
+        
+        # Calculate minimum variance portfolio
+        min_var_return = b / c
+        min_var_vol = np.sqrt(1 / c)
+        
+        # Calculate portfolio weights for minimum variance
+        min_var_weights = inv_cov @ (ones_vector * 1 / c)
+        
+        # Calculate tangency (maximum Sharpe ratio) portfolio if rf_rate is provided
+        tangency_return = None
+        tangency_vol = None
+        tangency_sharpe = None
+        weights_tan = None
+        
+        if 'rf_rate' in locals():
+            # Calculate tangency portfolio returns and volatility
+            excess_returns = user_returns - rf_rate
+            try:
+                # Calculate weights
+                weights_tan = inv_cov @ excess_returns
+                weights_tan = weights_tan / np.sum(weights_tan)  # Normalize
+                
+                # Apply short-selling constraint if needed
+                if not allow_short_analytical:
+                    weights_tan = np.maximum(weights_tan, 0)
+                    weights_tan = weights_tan / np.sum(weights_tan)  # Re-normalize
+                
+                # Calculate returns and volatility
+                tangency_return = np.sum(weights_tan * user_returns)
+                tangency_vol = np.sqrt(weights_tan @ cov_matrix @ weights_tan)
+                tangency_sharpe = (tangency_return - rf_rate) / tangency_vol
+            except Exception as e:
+                st.warning(f"Could not calculate tangency portfolio: {e}")
+        
+        with main_col:
+            # Add a slider for the user to select a target return level
+            st.subheader("Select Target Return")
+            
+            # Ensure target return slider has sensible bounds
+            min_slider = min(min(user_returns) * 0.8, min_var_return * 0.8)
+            max_slider = max(user_returns) * 1.2
+            default_target = min_var_return + (max_slider - min_var_return) / 2
+            
+            target_return = st.slider(
+                "Expected Return", 
+                min_value=float(min_slider), 
+                max_value=float(max_slider), 
+                value=float(default_target),
+                step=0.001,
+                format="%.3f",
+                key="target_return"
+            )
+            
+            # Calculate weights for target return portfolio
+            # Formula: w = λ(Σ^(-1)1) + γ(Σ^(-1)μ) where λ = (c - bμₚ)/d and γ = (b - aμₚ)/d
+            lam = (c * target_return - b) / d  # Note: this is the original formula, fixed from the existing code
+            gamma = - (b * target_return - a) / d  # Fixed from the existing code
+            
+            
+            target_weights = lam * (inv_cov @ user_returns) + gamma * (inv_cov @ ones_vector)
+            
+            # Apply short-selling constraint if needed
+            valid_target = True
+            if not allow_short_analytical and np.any(target_weights < 0):
+                st.warning("The selected return level requires short selling, which is currently disabled.")
+                valid_target = False
+            
+            # Calculate variance for target return
+            target_var = (c * target_return**2 - 2 * b * target_return + a) / d
+            
+            if target_var <= 0 or np.isnan(target_var) or np.isinf(target_var):
+                st.warning("The selected return level results in an invalid portfolio variance.")
+                valid_target = False
+            else:
+                target_vol = np.sqrt(target_var)
+                target_sharpe = (target_return - rf_rate) / target_vol if target_vol > 0 else 0
+            
+            # Create plot for efficient frontier
+            fig, ax = plt.subplots(figsize=plot_size)
+            
+            # Generate points on the efficient frontier
+            returns = np.linspace(min_ret, max_ret, 100)
+            
+            # Calculate variance for each return level
+            variances = (c * returns**2 - 2 * b * returns + a) / d
+            volatilities = np.sqrt(variances)
+            
+            # Plot the frontier
+            valid_points = ~np.isnan(volatilities) & ~np.isinf(volatilities) & (volatilities > 0)
+            ax.plot(volatilities[valid_points], returns[valid_points], 'b-', lw=2, label='Efficient Frontier')
+            
+            # Plot minimum variance portfolio
+            ax.scatter([min_var_vol], [min_var_return], color='blue', s=70, marker='*', label='Min Variance')
+            
+            # Plot target return portfolio if valid
+            if valid_target:
+                ax.scatter([target_vol], [target_return], color='orange', s=70, marker='*', label=f'Target Return ({target_return:.3f})')
+            
+            # Plot tangency portfolio if calculated
+            if tangency_return is not None:
+                ax.scatter([tangency_vol], [tangency_return], color='purple', s=70, marker='*', label='Max Sharpe Ratio')
+                
+                # Plot Capital Market Line
+                if show_cml_analytical:
+                    x_cml = np.linspace(0, max(volatilities[valid_points]) * 1.2, 100)
+                    y_cml = rf_rate + (tangency_return - rf_rate) / tangency_vol * x_cml
+                    ax.plot(x_cml, y_cml, 'r--', label='Capital Market Line')
+            
+            # Plot individual assets
+            for i in range(len(user_returns)):
+                ax.scatter([user_stdevs[i]], [user_returns[i]], color=f'C{i}', s=60, label=f'Asset {asset_names[i]}')
+            
+            # Plot risk-free asset
+            ax.scatter([0], [rf_rate], color='black', s=50, marker='o', label='Risk-free')
+            
+            ax.set_xlabel('Volatility (Standard Deviation)', fontsize=10)
+            ax.set_ylabel('Expected Return', fontsize=10)
+            ax.set_title('Analytical Efficient Frontier for Four Assets', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8, loc='best')
+            
+            # Set reasonable axis limits to include risk-free rate
+            ax.set_xlim(0, max(user_stdevs) * 1.2)
+            # Ensure y-axis includes risk-free rate
+            y_min = min(rf_rate, min(user_returns)) * 0.9
+            y_max = max(user_returns) * 1.3
+            ax.set_ylim(y_min, y_max)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            # Create columns for portfolios
+            portfolios_cols = st.columns(3)
+            
+            # Display minimum variance portfolio details
+            with portfolios_cols[0]:
+                st.subheader("Minimum Variance Portfolio")
+                st.markdown(f"""
+                - Return: {min_var_return:.4f} ({min_var_return*100:.2f}%)
+                - Volatility: {min_var_vol:.4f} ({min_var_vol*100:.2f}%)
+                - Sharpe: {(min_var_return - rf_rate) / min_var_vol:.4f}
+                """)
+                
+                # Create a dataframe for minimum variance weights
+                min_var_df = pd.DataFrame({
+                    'Asset': asset_names,
+                    'Weight': [f"{w:.2%}" for w in min_var_weights]
+                }).set_index('Asset')
+                st.dataframe(min_var_df, height=150, use_container_width=True)
+            
+            # Display target return portfolio details if valid
+            with portfolios_cols[1]:
+                st.subheader("Target Return Portfolio")
+                if valid_target:
+                    st.markdown(f"""
+                    - Return: {target_return:.4f} ({target_return*100:.2f}%)
+                    - Volatility: {target_vol:.4f} ({target_vol*100:.2f}%)
+                    - Sharpe: {target_sharpe:.4f}
+                    """)
+                    
+                    # Create a dataframe for target weights
+                    target_df = pd.DataFrame({
+                        'Asset': asset_names,
+                        'Weight': [f"{w:.2%}" for w in target_weights]
+                    }).set_index('Asset')
+                    st.dataframe(target_df, height=150, use_container_width=True)
+                else:
+                    st.info("Selected return level produces an invalid portfolio with current constraints.")
+            
+            # Display maximum Sharpe ratio portfolio if available
+            with portfolios_cols[2]:
+                if tangency_return is not None:
+                    st.subheader("Maximum Sharpe Ratio Portfolio")
+                    st.markdown(f"""
+                    - Return: {tangency_return:.4f} ({tangency_return*100:.2f}%)
+                    - Volatility: {tangency_vol:.4f} ({tangency_vol*100:.2f}%)
+                    - Sharpe Ratio: {tangency_sharpe:.4f}
+                    """)
+                    
+                    # Create a dataframe for max Sharpe weights
+                    max_sharpe_df = pd.DataFrame({
+                        'Asset': asset_names,
+                        'Weight': [f"{w:.2%}" for w in weights_tan]
+                    }).set_index('Asset')
+                    st.dataframe(max_sharpe_df, height=150, use_container_width=True)
+                else:
+                    st.info("Maximum Sharpe ratio portfolio could not be calculated.")
+        
+        # Display mathematical formulas in expander
+        with st.expander("Mathematical Formulation", expanded=False):
+            st.subheader("Efficient Frontier Formula")
+            st.markdown(r"""
+            The equation for the efficient frontier is:
+
+            $$\frac{\sigma^2_p}{1/c} = \frac{(r_p - b/c)^2}{|d|/c^2} + 1$$
+            
+            This shows the parabolic form of the efficient frontier when properly scaled.
+            
+            Where:
+            - $\sigma^2_p$ is the portfolio variance
+            - $r_p$ is the portfolio return
+            - $a = \mathbf{\mu}^T \Sigma^{-1} \mathbf{\mu}$
+            - $b = \mathbf{1}^T \Sigma^{-1} \mathbf{\mu}$
+            - $c = \mathbf{1}^T \Sigma^{-1} \mathbf{1}$
+            - $d = ac - b^2$
+            
+            And:
+            - $\mathbf{1}$ is a vector of ones
+            - $\mathbf{\mu}$ is the vector of expected returns
+            - $\Sigma$ is the covariance matrix
+            
+            The minimum variance portfolio has return $r_p = b/c$ and is the vertex of the parabola.
+            """)
+            
+            # Display the calculated parameters
+            st.subheader("Calculated Parameters")
+            st.markdown(f"""
+            - a = {a:.6f}
+            - b = {b:.6f}
+            - c = {c:.6f}
+            - d = {d:.6f}
+            - b/c = {b/c:.6f} (Global Minimum Variance Return)
+            - |d|/c² = {abs(d)/(c**2):.6f}
+            """)
+        
+        # Download portfolio data
+        target_returns = np.linspace(min_ret, max_ret, 50)
+        portfolio_data = []
+        
+        for r in target_returns:
+            # Calculate weights for this target return
+            lam = (c - b * r) / d
+            gamma = (b - a * r) / d
+            weights = lam * (inv_cov @ ones_vector) + gamma * (inv_cov @ user_returns)
+            
+            # Skip invalid portfolios
+            if np.isnan(weights).any() or np.isinf(weights).any():
+                continue
+            
+            # Apply short-selling constraint if needed
+            if not allow_short_analytical and (weights < 0).any():
+                continue
+            
+            # Calculate variance
+            variance = (c * r**2 - 2 * b * r + a) / d
+            
+            # Skip invalid variances
+            if variance <= 0 or np.isnan(variance) or np.isinf(variance):
+                continue
+            
+            volatility = np.sqrt(variance)
+            
+            # Calculate Sharpe ratio
+            sharpe = (r - rf_rate) / volatility
+            
+            # Create a row with weights
+            row = {
+                'Expected Return': r,
+                'Volatility': volatility,
+                'Sharpe Ratio': sharpe
+            }
+            
+            # Add weights
+            for i, name in enumerate(asset_names):
+                row[f'Weight {name}'] = weights[i]
+            
+            portfolio_data.append(row)
+        
+        # Create dataframe and download button
+        if portfolio_data:
+            portfolio_df = pd.DataFrame(portfolio_data)
+            
+            buffer = io.BytesIO()
+            portfolio_df.to_csv(buffer, index=False)
+            buffer.seek(0)
+            
+            st.download_button(
+                label="Download Portfolio Data",
+                data=buffer,
+                file_name="analytical_frontier.csv",
+                mime="text/csv",
+                key="download_analytical"
             )
 
 # Add footer with information in expander to save space
