@@ -2,7 +2,6 @@
 
 An interactive web application for visualizing the efficient frontier of investment portfolios using Streamlit and Python.
 
-![Portfolio Efficient Frontier](https://user-images.githubusercontent.com/your-username/path-to-your-image.png)
 
 ## Overview
 
