@@ -39,7 +39,7 @@ This application allows investors, students, and financial analysts to visualize
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/portfolio-efficient-frontier.git
+   git clone https://github.com/georgejjj/portfolio-efficient-frontier.git
    cd portfolio-efficient-frontier
    ```
 
