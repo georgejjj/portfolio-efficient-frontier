@@ -19,10 +19,11 @@ This application visualizes the efficient frontier for portfolios consisting of 
 * **Two-Asset Frontier**: Explore how correlation affects the efficient frontier for two assets
 * **Multi-Asset Frontier**: Visualize the frontier with multiple assets and find optimal portfolios
 * **Analytical Solution**: Calculate the exact efficient frontier using matrix operations
+* **Black-Litterman Model**: Incorporate investor views with the market equilibrium to improve portfolio allocation
 """)
 
 # Create tabs for main content
-tab1, tab2, tab3 = st.tabs(["Two-Asset Frontier", "Multi-Asset Frontier", "Analytical Solution"])
+tab1, tab2, tab3, tab4 = st.tabs(["Two-Asset Frontier", "Multi-Asset Frontier", "Analytical Solution", "Black-Litterman Model"])
 
 # ===== SIDEBAR PARAMETERS =====
 st.sidebar.title("Settings")
@@ -819,3 +820,475 @@ with st.expander("About this app", expanded=False):
 
     Created with Streamlit and Matplotlib.
     """)
+
+# =============== BLACK-LITTERMAN MODEL TAB ===============
+with tab4:
+    st.subheader("Black-Litterman Model")
+    
+    # Instructions
+    st.markdown(r"""
+    The Black-Litterman model combines market equilibrium returns with investor views to create an improved 
+    estimation of expected returns. This approach helps address some of the limitations of the standard mean-variance optimization:
+    
+    1. It starts with market equilibrium returns as a neutral prior (using CAPM reverse optimization)
+    2. It allows investors to incorporate their own views with different confidence levels
+    3. It mitigates issues like input sensitivity and extreme allocations
+    
+    The model produces a new set of expected returns that can be used in the efficient frontier calculation.
+    """)
+    
+    # Create a layout with columns for inputs and results
+    input_col, main_col = st.columns([1, 2])
+    
+    with input_col:
+        # Asset input section
+        st.subheader("Asset Parameters")
+        
+        # Default values for the assets (same as analytical solution tab)
+        default_returns = np.array([0.037, 0.020, 0.026, 0.041])
+        default_stdevs = np.array([0.114, 0.147, 0.104, 0.105])
+        default_corr = np.array([
+            [1.000, 0.239, 0.590, 0.501],
+            [0.239, 1.000, 0.262, 0.194],
+            [0.590, 0.262, 1.000, 0.458],
+            [0.501, 0.194, 0.458, 1.000]
+        ])
+        
+        asset_names = ['A', 'B', 'C', 'D']
+        
+        # Create inputs for asset returns and volatilities
+        st.write("Expected Returns and Standard Deviations:")
+        cols = st.columns(2)
+        
+        # Arrays to store user inputs
+        user_returns = np.zeros(4)
+        user_stdevs = np.zeros(4)
+        
+        # Create inputs for each asset
+        for i in range(4):
+            with cols[0]:
+                user_returns[i] = st.number_input(
+                    f"Return {asset_names[i]} (%)", 
+                    value=float(default_returns[i] * 100),
+                    step=0.1,
+                    format="%.1f",
+                    key=f"bl_return_{i}"
+                ) / 100
+            
+            with cols[1]:
+                user_stdevs[i] = st.number_input(
+                    f"Std {asset_names[i]} (%)", 
+                    value=float(default_stdevs[i] * 100),
+                    step=0.1,
+                    format="%.1f",
+                    key=f"bl_std_{i}"
+                ) / 100
+        
+        # Correlation matrix display
+        st.write("Correlation Matrix:")
+        
+        # User inputs for correlation
+        user_corr = np.eye(4)  # Initialize with ones on diagonal
+        
+        # Create correlation matrix inputs
+        for i in range(4):
+            for j in range(i+1, 4):
+                user_corr[i, j] = user_corr[j, i] = st.number_input(
+                    f"Corr {asset_names[i]}-{asset_names[j]}", 
+                    min_value=-1.0,
+                    max_value=1.0,
+                    value=float(default_corr[i, j]),
+                    step=0.01,
+                    format="%.3f",
+                    key=f"bl_corr_{i}_{j}"
+                )
+        
+        # Calculate the covariance matrix
+        cov_matrix = np.outer(user_stdevs, user_stdevs) * user_corr
+        
+        # Black-Litterman specific inputs
+        st.subheader("Black-Litterman Parameters")
+        
+        # Option to allow short selling
+        allow_short_bl = st.checkbox("Allow Short Selling", value=False, key="allow_short_bl")
+        
+        # Market capitalization weights (default to equal weights)
+        st.write("Market Capitalization Weights (%):")
+        market_caps = np.zeros(4)
+        total_weight = 0
+        
+        for i in range(4):
+            weight = st.number_input(
+                f"Weight {asset_names[i]}", 
+                value=25.0,  # Equal weights by default
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                format="%.1f",
+                key=f"bl_weight_{i}"
+            )
+            market_caps[i] = weight
+            total_weight += weight
+        
+        # Normalize weights to sum to 1
+        market_caps = market_caps / total_weight if total_weight > 0 else np.ones(4) / 4
+        
+        # Tau parameter (scalar that adjusts the uncertainty in the prior)
+        tau = st.slider(
+            "Uncertainty in Prior (τ)", 
+            min_value=0.01, 
+            max_value=1.0, 
+            value=0.05,
+            step=0.01,
+            format="%.2f"
+        )
+        
+        # Investor views
+        st.subheader("Investor Views")
+        
+        # Allow users to add views
+        num_views = st.slider("Number of Views", min_value=0, max_value=3, value=1)
+        
+        # Initialize view matrices
+        P = np.zeros((num_views, 4))  # View pick matrix
+        q = np.zeros(num_views)       # View returns
+        omega = np.zeros((num_views, num_views))  # Diagonal confidence matrix
+        
+        # Get views from user
+        for v in range(num_views):
+            st.write(f"View {v+1}:")
+            
+            view_col1, view_col2 = st.columns(2)
+            
+            # For each asset, get the weight in this view
+            for i in range(4):
+                with view_col1:
+                    P[v, i] = st.number_input(
+                        f"Weight {asset_names[i]} in View {v+1}", 
+                        min_value=-1.0,
+                        max_value=1.0,
+                        value=1.0 if i == v else 0.0,
+                        step=0.1,
+                        format="%.1f",
+                        key=f"view_weight_{v}_{i}"
+                    )
+            
+            # Get the view's expected return
+            with view_col2:
+                q[v] = st.number_input(
+                    f"Expected Return for View {v+1} (%)",
+                    value=float(default_returns[v] * 110),  # 10% higher than default
+                    step=0.1,
+                    format="%.1f",
+                    key=f"view_return_{v}"
+                ) / 100
+                
+                # Confidence in the view (1 = high confidence, 10 = low confidence)
+                confidence = st.slider(
+                    f"Confidence in View {v+1}",
+                    min_value=1,
+                    max_value=10,
+                    value=5,
+                    key=f"view_conf_{v}"
+                )
+                
+                # Convert confidence to omega (lower confidence = higher variance)
+                view_variance = (confidence / 10) * (P[v] @ cov_matrix @ P[v])
+                omega[v, v] = view_variance
+    
+    with main_col:
+        # Calculate Black-Litterman expected returns
+        st.subheader("Black-Litterman Model Results")
+        
+        # Option to display prior equilibrium returns
+        show_prior = st.checkbox("Show Market Equilibrium (Prior) Returns", value=True)
+        
+        # Display view information in a cleaner format if views exist
+        if num_views > 0:
+            st.write("Investor Views Summary:")
+            views_summary = []
+            for v in range(num_views):
+                view_str = " + ".join([f"{P[v, i]:.1f} {asset_names[i]}" for i in range(4) if abs(P[v, i]) > 0.001])
+                views_summary.append({
+                    "View Expression": view_str,
+                    "Expected Return (%)": f"{q[v]*100:.1f}%",
+                    "Confidence": f"{10-omega[v,v]/np.mean(omega)*5:.1f}/10" if omega[v,v] > 0 else "N/A"
+                })
+            
+            st.dataframe(pd.DataFrame(views_summary), use_container_width=True)
+        
+        # Calculate CAPM implied equilibrium returns (reverse optimization)
+        # Formula: Π = δΣw_mkt where δ is risk aversion and w_mkt are market weights
+        risk_aversion = 2.5  # Market price of risk
+        pi = risk_aversion * cov_matrix @ market_caps
+        
+        # Calculate posterior expected returns using Black-Litterman formula
+        if num_views > 0:
+            # Formula: E[R] = [(τΣ)^-1 + P'Ω^-1P]^-1 [(τΣ)^-1 Π + P'Ω^-1q]
+            try:
+                # Calculate precision matrices
+                tau_sigma_inv = np.linalg.inv(tau * cov_matrix)
+                omega_inv = np.linalg.inv(omega)
+                
+                # Calculate the posterior precision and returns
+                posterior_precision = tau_sigma_inv + P.T @ omega_inv @ P
+                posterior_returns = np.linalg.solve(
+                    posterior_precision, 
+                    tau_sigma_inv @ pi + P.T @ omega_inv @ q
+                )
+                
+                # Calculate posterior covariance (scaled by 1+tau to get the correct variance)
+                posterior_covariance = cov_matrix + np.linalg.inv(posterior_precision)
+            except np.linalg.LinAlgError:
+                st.error("Error: Matrix inversion failed. Please check your inputs, especially your view specifications.")
+                posterior_returns = pi  # Default to prior if calculation fails
+                posterior_covariance = cov_matrix
+        else:
+            # If no views, posterior equals prior
+            posterior_returns = pi
+            posterior_covariance = cov_matrix
+        
+        # Compare prior and posterior returns
+        comparison_data = {
+            "Asset": asset_names,
+            "Market Implied Returns (%)": [f"{r*100:.2f}" for r in pi],
+            "Black-Litterman Returns (%)": [f"{r*100:.2f}" for r in posterior_returns],
+            "Original Returns (%)": [f"{r*100:.2f}" for r in user_returns]
+        }
+        
+        st.write("Return Comparison:")
+        st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+        
+        # Calculate efficient frontier using the Black-Litterman returns
+        a_bl, b_bl, c_bl, d_bl, inv_cov_bl, ones_vector = calculate_frontier_params(posterior_returns, posterior_covariance)
+        
+        if inv_cov_bl is not None:
+            # Calculate minimum and maximum returns for the frontier
+            min_ret_bl = min(posterior_returns) * 0.5
+            max_ret_bl = max(posterior_returns) * 1.5
+            
+            # Calculate minimum variance portfolio
+            min_var_return_bl = b_bl / c_bl
+            min_var_vol_bl = np.sqrt(1 / c_bl)
+            
+            # Calculate efficient frontier graph
+            st.subheader("Black-Litterman Efficient Frontier")
+            
+            # Create plot
+            fig, ax = plt.subplots(figsize=plot_size)
+            
+            # Generate points on the efficient frontier
+            returns = np.linspace(min_ret_bl, max_ret_bl, 100)
+            
+            # Calculate variance for each return level
+            variances = (c_bl * returns**2 - 2 * b_bl * returns + a_bl) / d_bl
+            volatilities = np.sqrt(np.abs(variances))  # Ensure positive values
+            
+            # Plot the frontier
+            valid_points = ~np.isnan(volatilities) & ~np.isinf(volatilities) & (variances > 0)
+            ax.plot(volatilities[valid_points], returns[valid_points], 'b-', lw=2, label='BL Efficient Frontier')
+            
+            # Plot minimum variance portfolio
+            ax.scatter([min_var_vol_bl], [min_var_return_bl], color='blue', s=70, marker='*', label='Min Variance (BL)')
+            
+            # Calculate and plot tangency portfolio
+            if 'rf_rate' in locals():
+                # Calculate tangency portfolio
+                excess_returns = posterior_returns - rf_rate
+                
+                # Calculate weights
+                weights_bl_tan = inv_cov_bl @ excess_returns
+                weights_bl_tan = weights_bl_tan / np.sum(weights_bl_tan)  # Normalize
+                
+                # Apply short-selling constraint if needed
+                if not allow_short_bl:
+                    weights_bl_tan = np.maximum(weights_bl_tan, 0)
+                    weights_bl_tan = weights_bl_tan / np.sum(weights_bl_tan)  # Re-normalize
+                
+                # Calculate tangency portfolio return and risk
+                tangency_return_bl = weights_bl_tan @ posterior_returns
+                tangency_vol_bl = np.sqrt(weights_bl_tan @ posterior_covariance @ weights_bl_tan)
+                
+                # Plot tangency portfolio
+                ax.scatter([tangency_vol_bl], [tangency_return_bl], color='purple', s=70, marker='*', label='Max Sharpe (BL)')
+                
+                # Plot Capital Market Line
+                x_cml = np.linspace(0, max(volatilities[valid_points]) * 1.2, 100)
+                y_cml = rf_rate + (tangency_return_bl - rf_rate) / tangency_vol_bl * x_cml
+                ax.plot(x_cml, y_cml, 'r--', label='Capital Market Line')
+            
+            # If user selected to show prior frontier, plot it
+            if show_prior:
+                # Calculate efficient frontier using market-implied returns
+                a_prior, b_prior, c_prior, d_prior, inv_cov_prior, ones_vector = calculate_frontier_params(pi, cov_matrix)
+                
+                if inv_cov_prior is not None:
+                    # Generate points on the prior frontier
+                    returns_prior = np.linspace(min(pi) * 0.5, max(pi) * 1.5, 100)
+                    
+                    # Calculate variance for each return level
+                    variances_prior = (c_prior * returns_prior**2 - 2 * b_prior * returns_prior + a_prior) / d_prior
+                    volatilities_prior = np.sqrt(np.abs(variances_prior))
+                    
+                    # Plot the prior frontier
+                    valid_points_prior = ~np.isnan(volatilities_prior) & ~np.isinf(volatilities_prior) & (variances_prior > 0)
+                    ax.plot(volatilities_prior[valid_points_prior], returns_prior[valid_points_prior], 'g--', lw=1.5, 
+                            alpha=0.6, label='Prior Efficient Frontier')
+            
+            # Plot individual assets
+            for i in range(len(posterior_returns)):
+                ax.scatter([user_stdevs[i]], [posterior_returns[i]], color=f'C{i}', s=60, label=f'Asset {asset_names[i]} (BL)')
+                if show_prior:
+                    ax.scatter([user_stdevs[i]], [pi[i]], color=f'C{i}', s=40, alpha=0.5, marker='x')
+                
+            # Plot risk-free asset
+            ax.scatter([0], [rf_rate], color='black', s=50, marker='o', label='Risk-free')
+            
+            ax.set_xlabel('Volatility (Standard Deviation)', fontsize=10)
+            ax.set_ylabel('Expected Return', fontsize=10)
+            ax.set_title('Black-Litterman Efficient Frontier', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8, loc='best')
+            
+            # Set reasonable axis limits
+            ax.set_xlim(0, max(user_stdevs) * 1.2)
+            y_min = min(rf_rate, min(posterior_returns)) * 0.9
+            y_max = max(posterior_returns) * 1.3
+            ax.set_ylim(y_min, y_max)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            # Portfolio weights based on Black-Litterman
+            st.subheader("Optimal Portfolio Weights")
+            
+            # Create columns for different optimal portfolios
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.write("Minimum Variance Weights")
+                min_var_weights_bl = inv_cov_bl @ ones_vector / c_bl
+                
+                # Normalize weights to ensure they sum to 1
+                min_var_weights_bl = min_var_weights_bl / np.sum(min_var_weights_bl)
+                
+                # Create a dataframe for the weights
+                min_var_weights_df = pd.DataFrame({
+                    'Asset': asset_names,
+                    'Weight (%)': [f"{w*100:.2f}" for w in min_var_weights_bl]
+                })
+                st.dataframe(min_var_weights_df, use_container_width=True)
+            
+            with col2:
+                if 'rf_rate' in locals():
+                    st.write("Maximum Sharpe Ratio Weights")
+                    
+                    # Create a dataframe for the tangency weights
+                    tangency_weights_df = pd.DataFrame({
+                        'Asset': asset_names,
+                        'Weight (%)': [f"{w*100:.2f}" for w in weights_bl_tan]
+                    })
+                    st.dataframe(tangency_weights_df, use_container_width=True)
+                else:
+                    st.write("Set risk-free rate to calculate Max Sharpe Ratio")
+            
+            with col3:
+                st.write("Market Weights")
+                
+                # Create a dataframe for the market weights
+                market_weights_df = pd.DataFrame({
+                    'Asset': asset_names,
+                    'Weight (%)': [f"{w*100:.2f}" for w in market_caps]
+                })
+                st.dataframe(market_weights_df, use_container_width=True)
+            
+            # Mathematical explanation of Black-Litterman model
+            with st.expander("Black-Litterman Model Details", expanded=False):
+                st.markdown(r"""
+                ### Black-Litterman Formula
+                
+                The Black-Litterman model combines two sources of information:
+                
+                1. **Market Equilibrium (Prior):** $\Pi = \delta \Sigma w_{mkt}$
+                   - $\Pi$ is the implied excess return vector
+                   - $\delta$ is the risk aversion coefficient
+                   - $\Sigma$ is the covariance matrix
+                   - $w_{mkt}$ is the market capitalization weights
+                
+                2. **Investor Views:** Expressed as $P \cdot E[R] = q + \varepsilon$
+                   - $P$ is the pick matrix that selects assets for each view
+                   - $q$ is the vector of view returns
+                   - $\varepsilon$ is the uncertainty in the views, distributed $N(0, \Omega)$
+                
+                The posterior expected returns are calculated as:
+                
+                $$E[R] = [(\tau\Sigma)^{-1} + P'\Omega^{-1}P]^{-1} \cdot [(\tau\Sigma)^{-1}\Pi + P'\Omega^{-1}q]$$
+                
+                where:
+                - $\tau$ is a scalar that adjusts the uncertainty in the prior
+                - $\Omega$ is the diagonal covariance matrix of view uncertainties
+                
+                The resulting $E[R]$ represents the Black-Litterman expected returns that can be used
+                in standard mean-variance optimization.
+                """)
+            
+            # Download button for Black-Litterman efficient frontier data
+            portfolio_data_bl = []
+            
+            # Generate frontier points
+            target_returns_bl = np.linspace(min_ret_bl, max_ret_bl, 50)
+            
+            for r in target_returns_bl:
+                # Calculate weights for this target return
+                lam = (c_bl * r - b_bl) / d_bl
+                gamma = (b_bl - a_bl * r) / d_bl
+                weights = lam * (inv_cov_bl @ posterior_returns) + gamma * (inv_cov_bl @ ones_vector)
+                
+                # Skip invalid portfolios
+                if np.isnan(weights).any() or np.isinf(weights).any():
+                    continue
+                
+                # Apply short-selling constraint if needed
+                if not allow_short_bl and (weights < 0).any():
+                    continue
+                
+                # Calculate variance
+                variance = (c_bl * r**2 - 2 * b_bl * r + a_bl) / d_bl
+                
+                # Skip invalid variances
+                if variance <= 0 or np.isnan(variance) or np.isinf(variance):
+                    continue
+                
+                volatility = np.sqrt(variance)
+                
+                # Calculate Sharpe ratio
+                sharpe = (r - rf_rate) / volatility if 'rf_rate' in locals() else 0
+                
+                # Create a row with weights
+                row = {
+                    'Expected Return': r,
+                    'Volatility': volatility,
+                    'Sharpe Ratio': sharpe
+                }
+                
+                # Add weights
+                for i, name in enumerate(asset_names):
+                    row[f'Weight {name}'] = weights[i]
+                
+                portfolio_data_bl.append(row)
+            
+            # Create dataframe and download button
+            if portfolio_data_bl:
+                portfolio_df_bl = pd.DataFrame(portfolio_data_bl)
+                
+                buffer_bl = io.BytesIO()
+                portfolio_df_bl.to_csv(buffer_bl, index=False)
+                buffer_bl.seek(0)
+                
+                st.download_button(
+                    label="Download Black-Litterman Portfolio Data",
+                    data=buffer_bl,
+                    file_name="black_litterman_frontier.csv",
+                    mime="text/csv",
+                    key="download_bl"
+                )
